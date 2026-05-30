@@ -3,6 +3,7 @@ import re
 import time
 import random
 from db import insert_leads, get_leads_df
+from ddgs import DDGS
 
 ROLE_TEMPLATES = {
     "C-Suite / Directors": [
