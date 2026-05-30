@@ -3,7 +3,6 @@ import re
 import time
 import random
 from db import insert_leads, get_leads_df
-from ddgs import DDGS
 
 ROLE_TEMPLATES = {
     "C-Suite / Directors": [
@@ -58,7 +57,7 @@ def extract_linkedin_urls(results: list) -> list:
 def ddg_search(query: str, max_results: int = 10) -> list:
     """Search via duckduckgo_search library — handles bot detection properly."""
     try:
-        from duckduckgo_search import DDGS
+        from ddgs import DDGS
         with DDGS() as ddgs:
             results = list(ddgs.text(query, max_results=max_results))
         return extract_linkedin_urls(results)
