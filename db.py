@@ -1,6 +1,6 @@
 """
 db.py — Neon PostgreSQL connection + schema bootstrap
-All modules import from here: get_conn(), get_df(), upsert_lead(), etc.
+Uses fresh connection per query — no caching, no stale connection issues on Streamlit Cloud.
 """
 
 import streamlit as st
@@ -11,27 +11,38 @@ from datetime import datetime, timezone
 import uuid
 
 
-# ── Connection ─────────────────────────────────────────────────────────────────
-@st.cache_resource
+# ── Connection — fresh per call, Neon handles pooling on its side ──────────────
 def get_conn():
     return psycopg2.connect(
         st.secrets["NEON_DATABASE_URL"],
-        sslmode="require",
-        cursor_factory=psycopg2.extras.RealDictCursor
+        cursor_factory=psycopg2.extras.RealDictCursor,
+        connect_timeout=10,
     )
 
 
 def run(sql: str, params=None, fetch=False):
-    conn = get_conn()
+    """Open a fresh connection, execute, close. Safe on Streamlit Cloud."""
+    conn = None
     try:
+        conn = get_conn()
         with conn.cursor() as cur:
             cur.execute(sql, params or ())
-            if fetch:
-                return cur.fetchall()
-            conn.commit()
+            result = cur.fetchall() if fetch else None
+        conn.commit()
+        return result
     except Exception as e:
-        conn.rollback()
+        if conn:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         raise e
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ── Bootstrap schema ───────────────────────────────────────────────────────────
@@ -43,22 +54,19 @@ def init_db():
         query_source    TEXT,
         discovered_at   TIMESTAMPTZ DEFAULT NOW(),
 
-        -- Module 2: enrichment
         name            TEXT,
         title           TEXT,
         company         TEXT,
         location        TEXT,
         about           TEXT,
         enriched_at     TIMESTAMPTZ,
-        enrich_status   TEXT DEFAULT 'pending',   -- pending | enriched | failed
+        enrich_status   TEXT DEFAULT 'pending',
 
-        -- Module 3: DM
         dm_message      TEXT,
         dm_generated_at TIMESTAMPTZ,
         dm_sent         BOOLEAN DEFAULT FALSE,
         dm_sent_at      TIMESTAMPTZ,
 
-        -- Meta
         notes           TEXT,
         tags            TEXT[]
     );
@@ -66,10 +74,9 @@ def init_db():
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
-def insert_leads(urls: list[str], query_source: str) -> dict:
-    """Bulk-insert new URLs, skip duplicates. Returns counts."""
+def insert_leads(urls: list, query_source: str) -> dict:
     inserted = 0
-    skipped = 0
+    skipped  = 0
     for url in urls:
         try:
             run("""
@@ -84,7 +91,6 @@ def insert_leads(urls: list[str], query_source: str) -> dict:
 
 
 def get_leads_df(status_filter: str = None) -> pd.DataFrame:
-    """Fetch all leads as DataFrame, optionally filtered by enrich_status."""
     if status_filter and status_filter != "All":
         rows = run(
             "SELECT * FROM leads WHERE enrich_status = %s ORDER BY discovered_at DESC",
@@ -136,11 +142,11 @@ def delete_lead(lead_id: str):
 def get_stats() -> dict:
     rows = run("""
         SELECT
-            COUNT(*)                                        AS total,
-            COUNT(*) FILTER (WHERE enrich_status='pending')    AS pending,
-            COUNT(*) FILTER (WHERE enrich_status='enriched')   AS enriched,
-            COUNT(*) FILTER (WHERE enrich_status='dm_ready')   AS dm_ready,
-            COUNT(*) FILTER (WHERE dm_sent = TRUE)             AS sent
+            COUNT(*)                                           AS total,
+            COUNT(*) FILTER (WHERE enrich_status='pending')   AS pending,
+            COUNT(*) FILTER (WHERE enrich_status='enriched')  AS enriched,
+            COUNT(*) FILTER (WHERE enrich_status='dm_ready')  AS dm_ready,
+            COUNT(*) FILTER (WHERE dm_sent = TRUE)            AS sent
         FROM leads
     """, fetch=True)
     return dict(rows[0]) if rows else {}
