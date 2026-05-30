@@ -3,3 +3,4 @@ psycopg2-binary>=2.9.9
 pandas>=2.1.0
 requests>=2.31.0
 selenium>=4.20.0
+duckduckgo-search>=6.2.0
